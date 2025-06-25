@@ -1,79 +1,103 @@
 """
-## Astronaut ETL example DAG
+# Astronaut ETL Example DAG (with Data Quality Checks)
 
-This DAG queries the list of astronauts currently in space from the
-Open Notify API and prints each astronaut's name and flying craft.
+This DAG retrieves the current list of astronauts in space from the Open Notify API, validates the result, and prints each astronaut’s name and craft.
 
-There are two tasks, one to get the data from the API and save the results,
-and another to print the results. Both tasks are written in Python using
-Airflow's TaskFlow API, which allows you to easily turn Python functions into
-Airflow tasks, and automatically infer dependencies and pass data.
+**Author**: Astro
+**Support**: support@astro.io
+**Tutorial**: https://docs.astronomer.io/learn/get-started-with-airflow
+**Related Assets**: current_astronauts (produced)
 
-The second task uses dynamic task mapping to create a copy of the task for
-each Astronaut in the list retrieved from the API. This list will change
-depending on how many Astronauts are in space, and the DAG will adjust
-accordingly each time it runs.
+---
 
-For more explanation and getting started instructions, see our Write your
-first DAG tutorial: https://docs.astronomer.io/learn/get-started-with-airflow
+#### DAG Workflow:
+1. **Extract** astronaut data from the API (fallback to sample data if unavailable).
+2. **Validate** the list for structure and expected content.
+3. **Print** each astronaut and their craft using dynamic task mapping.
 
-![Picture of the ISS](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg)
+> This example demonstrates: TaskFlow API usage, XCom, dynamic task mapping, asset lineage, and data quality validation in Airflow 3.0.0.
+
+![Space Station](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg)
 """
 
 from airflow.sdk import Asset, dag, task
 from pendulum import datetime, duration
 import requests
+import logging
 
-# -------------- #
-# DAG Definition #
-# -------------- #
+# --------------------- #
+# DAG Definition
+# --------------------- #
 
 
 @dag(
+    dag_id="example_astronauts",
+    description=(
+        "Queries live astronaut data from Open Notify API. Performs data validation, "
+        "dynamically maps a print task per astronaut, and tracks an asset for lineage. "
+        "See doc_md for full walkthrough and support information."
+    ),
     start_date=datetime(2025, 4, 1),
     schedule="@daily",
-    max_consecutive_failed_dag_runs=5,
-    doc_md=__doc__,
+    catchup=False,
+    max_active_runs=1,
+    max_consecutive_failed_dag_runs=3,
+    concurrency=10,
     default_args={
         "owner": "Astro",
+        "email": ["support@astro.io"],
+        "email_on_failure": True,
+        "email_on_retry": False,
         "retries": 3,
-        "retry_delay": duration(seconds=5),
+        "retry_delay": duration(seconds=10),
+        # Add SLA of 10 minutes for demo purposes
+        "sla": duration(minutes=10),
     },
-    tags=["example", "space"],
+    tags=["example", "space", "etl", "demo", "asset", "data-quality"],
+    doc_md=__doc__,
     is_paused_upon_creation=False,
 )
 def example_astronauts():
     """
-    DAG that extracts the list of astronauts currently in space using the Open Notify API, and prints their names and spacecraft.
+    ## Astronaut ETL (Extract/Validate/Load)
 
-    - Schedule: Daily, starting April 1, 2025
-    - Purpose: Demonstration of the Airflow TaskFlow API, including dynamic task mapping for parallel operations.
-    - Workflow:
-      1. Extract astronaut data (with fallback to hardcoded if API is unavailable),
-      2. Print a greeting for each astronaut and their craft in a mapped parallel task.
+    This Airflow DAG retrieves astronaut info from a public API, validates it, and logs summaries.
 
-    Each run reflects the current number of astronauts, with parallel printing using Airflow's dynamic task mapping. This is a realistic data integration (extract & report) pattern and showcases robust error fallback, documentation, and dataset tracking.
+    - **Asset Produced**: current_astronauts
+    - **Failover**: Falls back to static test data if API down.
+    - **Data Quality**: Fails DAG early if invalid data structure detected.
+    - **Dynamic Mapping Example**: Demonstrates Airflow 3.x dynamic task mapping on print tasks.
+
+    For more, see: [Astronomer Quickstart](https://docs.astronomer.io/learn/get-started-with-airflow)
     """
-    # ---------------- #
-    # Task Definitions #
-    # ---------------- #
 
-    @task(outlets=[Asset("current_astronauts")])
-    def get_astronauts(**context) -> list[dict]:
-        """
-        Retrieves a list of astronauts currently in space (from Open Notify API).
-        - Returns: List of dictionaries with astronaut names and crafts.
-        - XCom: Pushes the count of astronauts as XCom for downstream use.
-        - Fallback: If the API is not available, returns simulated astronaut data.
-        - Asset: Tracks the produced dataset for use by downstream scheduled assets/DAGs.
-        """
+    # ------------------- #
+    # Tasks
+    # ------------------- #
+
+    @task(
+        outlets=[Asset("current_astronauts")],
+        task_id="extract_astronaut_data",
+        doc_md="""
+          ### Extract Astronaut Data
+
+          Connects to the Open Notify API to fetch the list of astronauts in space. If unreachable, uses fallback test data.
+
+          - **Pushes**: astronaut count to XCom (key: number_of_people_in_space)
+          - **Produces**: Asset `current_astronauts`
+          """,
+    )
+    def extract_astronaut_data(**context) -> list[dict]:
         try:
-            r = requests.get("http://api.open-notify.org/astros.json")
+            r = requests.get("http://api.open-notify.org/astros.json", timeout=10)
             r.raise_for_status()
-            number_of_people_in_space = r.json()["number"]
-            list_of_people_in_space = r.json()["people"]
+            astronaut_api_response = r.json()
+            number_of_people_in_space = astronaut_api_response["number"]
+            list_of_people_in_space = astronaut_api_response["people"]
         except Exception as e:
-            print(f"API unavailable, using hardcoded astronaut data. Error: {e}")
+            logging.warning(
+                f"API unavailable, using fallback astronaut data. Error: {e}"
+            )
             number_of_people_in_space = 12
             list_of_people_in_space = [
                 {"craft": "ISS", "name": "Marco Alain Sieber"},
@@ -85,26 +109,70 @@ def example_astronauts():
         )
         return list_of_people_in_space
 
-    @task
-    def print_astronaut_craft(greeting: str, person_in_space: dict) -> None:
-        """
-        Prints the name and spacecraft of a single astronaut, using the info returned from get_astronauts.
-        Prints a custom greeting. This task is dynamically mapped to run once for each astronaut found.
-        - Inputs:
-            greeting (str): Greeting message to prepend
-            person_in_space (dict): Dictionary with astronaut info (craft and name)
-        - Output: None; only logs output to standard out
-        """
+    @task(
+        task_id="validate_astronaut_data",
+        doc_md="""
+          ### Validate Astronaut Data
+
+          Checks that astronaut data is non-empty, has valid structure, and each entry contains a name and craft.
+
+          - **Fails DAG** if invalid structure or missing fields detected.
+          - **Returns** the clean data for downstream dynamic mapping.
+          """,
+    )
+    def validate_astronaut_data(astronaut_data: list[dict]) -> list[dict]:
+        logging.info(
+            f"Validating astronaut data quality. Data received: {astronaut_data}"
+        )
+        if not isinstance(astronaut_data, list) or not astronaut_data:
+            raise ValueError("Astronaut data is missing or not a non-empty list.")
+        for idx, astronaut in enumerate(astronaut_data):
+            if not isinstance(astronaut, dict):
+                raise TypeError(
+                    f"Entry at index {idx} is not a dictionary: {astronaut}"
+                )
+            if (
+                "name" not in astronaut
+                or not isinstance(astronaut["name"], str)
+                or not astronaut["name"].strip()
+            ):
+                raise ValueError(
+                    f"Missing or invalid 'name' at index {idx}: {astronaut}"
+                )
+            if (
+                "craft" not in astronaut
+                or not isinstance(astronaut["craft"], str)
+                or not astronaut["craft"].strip()
+            ):
+                raise ValueError(
+                    f"Missing or invalid 'craft' at index {idx}: {astronaut}"
+                )
+        logging.info("Astronaut data quality validated successfully.")
+        return astronaut_data
+
+    @task(
+        task_id="print_astronaut_and_craft",
+        doc_md="""
+          ### Print Astronaut and Craft Info (Mapped)
+
+          Logs each astronaut's craft and name with a greeting. Runs in parallel using Airflow 3.0 task mapping.
+          """,
+    )
+    def print_astronaut_and_craft(
+        person_in_space: dict, greeting: str = "Hello! :)"
+    ) -> None:
         craft = person_in_space["craft"]
         name = person_in_space["name"]
-        print(f"{name} is in space flying on the {craft}! {greeting}")
+        logging.info(f"{name} is in space flying on the {craft}! {greeting}")
 
-    # ------------------------------------ #
-    # Calling tasks + Setting dependencies #
-    # ------------------------------------ #
+    # --------------
+    # Set up workflow
+    # --------------
 
-    print_astronaut_craft.partial(greeting="Hello! :)").expand(
-        person_in_space=get_astronauts()
+    astronaut_data = extract_astronaut_data()
+    validated_data = validate_astronaut_data(astronaut_data)
+    print_astronaut_and_craft.partial(greeting="Hello! :)").expand(
+        person_in_space=validated_data
     )
 
 
