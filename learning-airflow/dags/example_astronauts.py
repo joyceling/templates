@@ -54,21 +54,69 @@ import logging
         "sla": duration(minutes=10),
     },
     tags=["example", "space", "etl", "demo", "asset", "data-quality"],
-    doc_md=__doc__,
+    doc_md="""
+    ## Astronaut ETL (Extract/Validate/Load): Example Airflow 3.0+ DAG
+
+    This DAG demonstrates a typical data pipeline pattern:
+    - **Extracts** a list of astronauts from a public API
+    - **Validates** the data structure/schema immediately
+    - **Prints** information for each astronaut in parallel (using Airflow 3.0 Task Mapping)
+    - **Produces an asset** ([see Airflow asset lineage](https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/datasets.html)) named `current_astronauts`
+
+    **How this DAG works:**
+    1. `extract_astronaut_data` fetches live astronaut info from http://api.open-notify.org/astros.json (falls back to static data if the API is unreachable).
+    2. `validate_astronaut_data` checks the input to ensure it’s a list of dicts containing `name` and `craft` keys.
+    3. `print_astronaut_and_craft` is dynamically mapped to run once for each astronaut. Each mapped task logs an individual astronaut and their craft.
+
+    **Sample Run Example (Log output):**
+    - "Sergey Prokopyev is in space flying on the ISS! Hello! :)"
+    - "Jeanette Epps is in space flying on the SpaceX Dragon! Hello! :)"
+
+    **Asset Output Example (`current_astronauts`):**
+    ```python
+    [{'craft': 'ISS', 'name': 'Sergey Prokopyev'}, ...]
+    ```
+    The output is tracked as a data asset in Airflow for lineage and downstream pipelines.
+
+    **Failure Handling:**
+    If the API is down or data is missing fields, the DAG will:
+    - Fall back to test data (extract task)
+    - Raise an error and fail quickly with descriptive logs (validation task)
+
+    ---
+
+    **Tip:** You can view XCom push/pull data on each task instance in the Airflow UI under the 'XCom' tab. Each mapped task run for `print_astronaut_and_craft` will appear as a separate line in the Grid view.
+
+    **See also:** https://docs.astronomer.io/learn/get-started-with-airflow for a step-by-step tutorial.
+    """,
     is_paused_upon_creation=False,
 )
 def example_astronauts():
     """
-    ## Astronaut ETL (Extract/Validate/Load)
+    ## Astronaut ETL (Extract/Validate/Load): Example Airflow 3.0+ DAG
 
-    This Airflow DAG retrieves astronaut info from a public API, validates it, and logs summaries.
+    This DAG demonstrates a typical data pipeline pattern:
+    - Extract list of astronauts from a public API
+    - Validate the data structure/schema
+    - Print info for each astronaut in parallel using Airflow 3.0 dynamic task mapping
+    - Produces an asset: `current_astronauts` (see Airflow asset lineage docs)
 
-    - **Asset Produced**: current_astronauts
-    - **Failover**: Falls back to static test data if API down.
-    - **Data Quality**: Fails DAG early if invalid data structure detected.
-    - **Dynamic Mapping Example**: Demonstrates Airflow 3.x dynamic task mapping on print tasks.
+    Usage Example:
+        $ airflow dags trigger example_astronauts
 
-    For more, see: [Astronomer Quickstart](https://docs.astronomer.io/learn/get-started-with-airflow)
+    Expected Output (Logs):
+        Sergei Prokopyev is in space flying on the ISS! Hello! :)
+        Jeanette Epps is in space flying on the SpaceX Dragon! Hello! :)
+
+    Asset Output (for downstream DAGs):
+        [ {'craft': 'ISS', 'name': 'Sergey Prokopyev'}, ... ]
+
+    Failure cases:
+    - API unreachable: static fallback data is used
+    - Data fails validation: DAG fails early with clear message
+
+    XCom:
+    - extract_astronaut_data pushes key: number_of_people_in_space (viewable in Airflow UI)
     """
 
     # ------------------- #
@@ -79,15 +127,46 @@ def example_astronauts():
         outlets=[Asset("current_astronauts")],
         task_id="extract_astronaut_data",
         doc_md="""
-          ### Extract Astronaut Data
+        ### Extract Astronaut Data
 
-          Connects to the Open Notify API to fetch the list of astronauts in space. If unreachable, uses fallback test data.
+        Fetches the current list of astronauts in space from the Open Notify API.
+        If the API request fails (network issue, non-2xx code), returns static fallback data instead.
 
-          - **Pushes**: astronaut count to XCom (key: number_of_people_in_space)
-          - **Produces**: Asset `current_astronauts`
-          """,
+        **Returns:**
+        A list of astronaut dictionaries in the format:
+        ```python
+        [{'craft': 'ISS', 'name': 'Sergey Prokopyev'}, ...]
+        ```
+
+        **XCom Pushes (usage):**
+        - Key: `number_of_people_in_space`
+        - Value: Integer (the number of astronauts, e.g. 10)
+
+        **API Example Response:**
+        ```json
+        {
+          "people": [
+            {"craft": "ISS", "name": "Sergey Prokopyev"},
+            {"craft": "ISS", "name": "Jeanette Epps"}
+          ],
+          "number": 2,
+          "message": "success"
+        }
+        ```
+
+        **Fallback Data Used Example:**
+        ```python
+        [
+          {"craft": "ISS", "name": "Marco Alain Sieber"},
+          {"craft": "ISS", "name": "Claude Nicollier"}
+        ]
+        ```
+
+        > **UI Tip:** To see the value pushed to XCom: Open this task’s latest run in the UI, select the 'XCom' tab, look for key `number_of_people_in_space`.
+        """,
     )
     def extract_astronaut_data(**context) -> list[dict]:
+        # Try real API, fallback on error -- this makes the DAG robust to connection problems
         try:
             r = requests.get("http://api.open-notify.org/astros.json", timeout=10)
             r.raise_for_status()
@@ -104,6 +183,7 @@ def example_astronauts():
                 {"craft": "ISS", "name": "Claude Nicollier"},
             ]
 
+        # Push astronaut count to XCom for easy inspection in Airflow UI
         context["ti"].xcom_push(
             key="number_of_people_in_space", value=number_of_people_in_space
         )
@@ -112,15 +192,30 @@ def example_astronauts():
     @task(
         task_id="validate_astronaut_data",
         doc_md="""
-          ### Validate Astronaut Data
+        ### Validate Astronaut Data
 
-          Checks that astronaut data is non-empty, has valid structure, and each entry contains a name and craft.
+        Checks the astronaut data structure, ensuring:
+        - The input is a non-empty list
+        - Each element is a dict with non-empty string fields `name` and `craft`
 
-          - **Fails DAG** if invalid structure or missing fields detected.
-          - **Returns** the clean data for downstream dynamic mapping.
-          """,
+        **Typical Input Example:**
+        ```python
+        [{'craft': 'ISS', 'name': 'Jeanette Epps'}, {'craft': 'ISS', 'name': 'Oleg Artemyev'}]
+        ```
+
+        **Failure Cases:**
+        - Input is `None`, not a list, or empty list
+        - An element is not a dict
+        - 'name' or 'craft' missing, or empty string
+
+        **On failure:** Raises an Exception to stop the DAG early and make debugging easier in the UI.
+        **Returns:** Cleaned/validated list of astronaut dictionaries (same as input if valid).
+
+        > **Best practice:** Validate data as early as possible in your pipeline. You can expand this function to check for duplicates, forbidden names, etc.
+        """,
     )
     def validate_astronaut_data(astronaut_data: list[dict]) -> list[dict]:
+        # Validate structure as soon as possible in pipeline
         logging.info(
             f"Validating astronaut data quality. Data received: {astronaut_data}"
         )
@@ -153,14 +248,34 @@ def example_astronauts():
     @task(
         task_id="print_astronaut_and_craft",
         doc_md="""
-          ### Print Astronaut and Craft Info (Mapped)
+        ### Print Astronaut and Craft Info (Mapped Task)
 
-          Logs each astronaut's craft and name with a greeting. Runs in parallel using Airflow 3.0 task mapping.
-          """,
+        Prints/logs each astronaut in the input list using Airflow 3.x dynamic task mapping.
+        Runs one mapped task per dictionary in `person_in_space`.
+
+        **Arguments:**
+        - `person_in_space`: dict, e.g. `{'craft': 'ISS', 'name': 'Jeanette Epps'}`
+        - `greeting`: str, default "Hello! :)"
+
+        **Example log output:**
+        ```
+        Jeanette Epps is in space flying on the ISS! Hello! :)
+        ```
+
+        **Dynamic Task Mapping Example:**
+        If three astronauts are passed:
+        ```python
+        input = [{'craft': 'ISS', 'name': 'A'}, {'craft': 'Soyuz', 'name': 'B'}, {'craft': 'ISS', 'name': 'C'}]
+        ```
+        Airflow will create three mapped task instances; each will process one dict from the input list.
+
+        > **UI Tip:** Each mapped task instance appears as a numbered row in the Grid View.
+        """,
     )
     def print_astronaut_and_craft(
         person_in_space: dict, greeting: str = "Hello! :)"
     ) -> None:
+        # Mapped task: Airflow creates one instance per astronaut, running in parallel
         craft = person_in_space["craft"]
         name = person_in_space["name"]
         logging.info(f"{name} is in space flying on the {craft}! {greeting}")
