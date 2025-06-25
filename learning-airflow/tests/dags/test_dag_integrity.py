@@ -4,7 +4,7 @@ import os
 import logging
 from contextlib import contextmanager
 import pytest
-from airflow.models import DagBag
+from airflow.models import DagBat
 
 
 @contextmanager

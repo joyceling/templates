@@ -20,7 +20,7 @@ first DAG tutorial: https://docs.astronomer.io/learn/get-started-with-airflow
 ![Picture of the ISS](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg)
 """
 
- # This DAG uses the TaskFlow API. See: https://www.astronomer.io/docs/learn/airflow-decorators
+# This DAG uses the TaskFlow API. See: https://www.astronomer.io/docs/learn/airflow-decorators
 from airflow.sdk import Asset, dag, task
 from pendulum import datetime, duration
 import requests
@@ -43,10 +43,9 @@ import requests
         "retry_delay": duration(seconds=5),  # tasks wait 30s in between retries
     },  # default_args are applied to all tasks in a DAG
     tags=["example", "space"],  # add tags in the UI
-    is_paused_upon_creation=False, # start running the DAG as soon as its created
+    is_paused_upon_creation=False,  # start running the DAG as soon as its created
 )
 def example_astronauts():
-
     # ---------------- #
     # Task Definitions #
     # ---------------- #
@@ -90,6 +89,27 @@ def example_astronauts():
         return list_of_people_in_space
 
     @task
+    def validate_astronauts(astronauts: list[dict]) -> list[dict]:
+        """
+        Data quality validation task for the astronaut list.
+        Raises an exception and stops the pipeline if:
+        - The data is not a list or is empty
+        - Any record is missing required keys ('name', 'craft')
+        """
+        if not isinstance(astronauts, list):
+            raise ValueError("Astronauts data is not a list.")
+        if not astronauts:
+            raise ValueError("Astronauts list is empty.")
+        for idx, item in enumerate(astronauts):
+            if not isinstance(item, dict):
+                raise ValueError(f"Astronaut entry {idx} is not a dict.")
+            for key in ["name", "craft"]:
+                if key not in item:
+                    raise ValueError(f"Astronaut entry {idx} missing key: {key}")
+        # Optionally, add more fine-grained checks here, e.g., value types, non-empty "name"
+        return astronauts
+
+    @task
     def print_astronaut_craft(greeting: str, person_in_space: dict) -> None:
         """
         This task creates a print statement with the name of an
@@ -106,15 +126,12 @@ def example_astronauts():
     # Calling tasks + Setting dependencies #
     # ------------------------------------ #
 
-    # each call of a @task decorated function creates one task in the Airflow UI
-    # passing the return value of one @task decorated function to another one
-    # automatically creates a task dependency
+    # Insert data validation step between get_astronauts and print task
+    validated_astronauts = validate_astronauts(get_astronauts())
 
-    # This task uses dynamic task mapping to create a variable number of copies
-    # of the print_astronaut_craft task at runtime in parallel
-    # See: https://www.astronomer.io/docs/learn/dynamic-tasks
+    # Now run dynamic mapping on validated data only
     print_astronaut_craft.partial(greeting="Hello! :)").expand(
-        person_in_space=get_astronauts()
+        person_in_space=validated_astronauts
     )
 
 
