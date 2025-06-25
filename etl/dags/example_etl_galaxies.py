@@ -44,14 +44,19 @@ _NUM_GALAXIES_TOTAL = os.getenv("NUM_GALAXIES_TOTAL", 20)
             _CLOSENESS_THRESHOLD_LY_DEFAULT,
             type="number",
             title="Galaxy Closeness Threshold",
-            description="Set how close galaxies need ot be to the milkyway in order to be loaded to DuckDB.",
+            description="Set how close galaxies need to be to the milkyway in order to be loaded to DuckDB.",
         )
     },
     is_paused_upon_creation=False,
 )
 def example_etl_galaxies():
     """
-    Example ETL DAG using Task Groups to organize the Extract, Transform, and Load phases.
+    DAG for ETL (Extract, Transform, Load) pipeline that gathers, processes, and stores data about galaxies using DuckDB.
+
+    - Schedule: Daily, starting April 1, 2025
+    - Structure: Uses task groups to organize code into phases: extract, transform, and load.
+    - Uses Airflow DAG parameters for configurable closeness threshold (light years).
+    - Creates and/or maintains a DuckDB table of nearby galaxies. Prints a summary after load.
     """
     # ------------- #
     # Task Groups   #
@@ -59,12 +64,20 @@ def example_etl_galaxies():
 
     @task_group(group_id="extract_phase")
     def extract_phase():
-        """Extracts raw galaxy data."""
+        """
+        Extract Phase: Retrieves raw galaxy data using a modular import (get_galaxy_data).
+        - Returns a pandas DataFrame of galaxies (mocked data for ETL pattern demonstration).
+        """
 
         @task
         def extract_galaxy_data(
             num_galaxies: int = _NUM_GALAXIES_TOTAL,
         ) -> pd.DataFrame:
+            """
+            Task to simulate extraction of galaxy data.
+            - Input: Number of galaxies to generate
+            - Output: DataFrame with galaxy information (name, distances, type, characteristics)
+            """
             galaxy_df = get_galaxy_data(num_galaxies)
             return galaxy_df
 
@@ -72,10 +85,20 @@ def example_etl_galaxies():
 
     @task_group(group_id="transform_phase")
     def transform_phase(galaxy_df):
-        """Filters/cleans the extracted galaxy data."""
+        """
+        Transform Phase: Filters galaxies to those closer than the configured threshold.
+        - Input: DataFrame from extract phase
+        - Output: DataFrame filtered by distance from Milky Way (configurable)
+        """
 
         @task
         def transform_galaxy_data(galaxy_df: pd.DataFrame, **context):
+            """
+            Filters galaxies based on distance from the Milky Way.
+            - Input: DataFrame of galaxies
+            - Output: Filtered DataFrame
+            - Uses Airflow param for distance threshold
+            """
             closeness_threshold_light_years = context["params"][
                 _CLOSENESS_THRESHOLD_LY_PARAMETER_NAME
             ]
@@ -91,13 +114,21 @@ def example_etl_galaxies():
 
     @task_group(group_id="load_phase")
     def load_phase(filtered_galaxy_df):
-        """Creates table (if needed) and loads filtered data into DuckDB."""
+        """
+        Load Phase: Creates the DuckDB table if needed and loads filtered data.
+        Verifies directory exists before loading. Loads the DataFrame into DuckDB (INSERT OR IGNORE).
+        """
 
         @task(retries=2)
         def create_galaxy_table_in_duckdb(
             duckdb_instance_name: str = _DUCKDB_INSTANCE_NAME,
             table_name: str = _DUCKDB_TABLE_NAME,
         ) -> None:
+            """
+            Ensures the DuckDB table for galaxies exists. Creates it if missing, no effect if already present.
+            - Input: DuckDB DB & table name
+            - Output: None; table is created or confirmed
+            """
             t_log.info("Creating galaxy table in DuckDB.")
             os.makedirs(os.path.dirname(duckdb_instance_name), exist_ok=True)
             cursor = duckdb.connect(duckdb_instance_name)
@@ -120,6 +151,11 @@ def example_etl_galaxies():
             duckdb_instance_name: str = _DUCKDB_INSTANCE_NAME,
             table_name: str = _DUCKDB_TABLE_NAME,
         ):
+            """
+            Inserts filtered galaxy data into DuckDB table. Uses 'INSERT OR IGNORE' pattern to prevent duplicates.
+            - Input: Filtered DataFrame, DuckDB config
+            - Output: None; table is updated (asset is tracked for future orchestration)
+            """
             t_log.info("Loading galaxy data into DuckDB.")
             cursor = duckdb.connect(duckdb_instance_name)
             cursor.sql(
@@ -137,6 +173,11 @@ def example_etl_galaxies():
         duckdb_instance_name: str = _DUCKDB_INSTANCE_NAME,
         table_name: str = _DUCKDB_TABLE_NAME,
     ):
+        """
+        Task to print a summary of all loaded galaxies from the DuckDB table for auditing and validation.
+        - Input: DuckDB DB & table name
+        - Output: None; table is printed (logs)
+        """
         cursor = duckdb.connect(duckdb_instance_name)
         near_galaxies_df = cursor.sql(f"SELECT * FROM {table_name};").df()
         near_galaxies_df = near_galaxies_df.sort_values(
