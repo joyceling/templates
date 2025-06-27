@@ -1,139 +1,139 @@
 """
-## Astronaut ETL example DAG
+Astronaut ETL Example DAG (Beginner Edition)
+============================================
 
-This DAG queries the list of astronauts currently in space from the
-Open Notify API and prints each astronaut's name and flying craft.
+This DAG is designed as an educational example for anyone learning Airflow via the TaskFlow API. It demonstrates:
+- How to build and document a DAG using modern Airflow APIs
+- Making an API call within a task to fetch the list of astronauts currently in space
+- Data quality validation as a separate task
+- Airflow's dynamic task mapping to process each astronaut in parallel
+- Use of Airflow Assets (Datasets) to enable data-driven scheduling (Airflow 2.6+)
 
-There are two tasks, one to get the data from the API and save the results,
-and another to print the results. Both tasks are written in Python using
-Airflow's TaskFlow API, which allows you to easily turn Python functions into
-Airflow tasks, and automatically infer dependencies and pass data.
+For more information, visit the Astronomer and Airflow documentation links throughout the code.
 
-The second task uses dynamic task mapping to create a copy of the task for
-each Astronaut in the list retrieved from the API. This list will change
-depending on how many Astronauts are in space, and the DAG will adjust
-accordingly each time it runs.
-
-For more explanation and getting started instructions, see our Write your
-first DAG tutorial: https://docs.astronomer.io/learn/get-started-with-airflow
+Further learning:
+- Astronomer: https://docs.astronomer.io/learn/get-started-with-airflow
+- Airflow TaskFlow API: https://airflow.apache.org/docs/apache-airflow/stable/tutorial/taskflow.html
+- Dynamic Task Mapping: https://airflow.apache.org/docs/apache-airflow/stable/tutorial/taskflow.html#dynamic-task-mapping
+- Asset (Dataset) Scheduling: https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/datasets.html
 
 ![Picture of the ISS](https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2010/02/space_station_over_earth/10293696-3-eng-GB/Space_Station_over_Earth_card_full.jpg)
 """
 
-# This DAG uses the TaskFlow API. See: https://www.astronomer.io/docs/learn/airflow-decorators
 from airflow.sdk import Asset, dag, task
 from pendulum import datetime, duration
 import requests
-
 
 # -------------- #
 # DAG Definition #
 # -------------- #
 
 
-# instantiate a DAG with the @dag decorator and set DAG parameters (see: https://www.astronomer.io/docs/learn/airflow-dag-parameters)
 @dag(
-    start_date=datetime(2025, 4, 1),  # date after which the DAG can be scheduled
-    schedule="@daily",  # see: https://www.astronomer.io/docs/learn/scheduling-in-airflow for options
-    max_consecutive_failed_dag_runs=5,  # auto-pauses the DAG after 5 consecutive failed runs, experimental
-    doc_md=__doc__,  # add DAG Docs in the UI, see https://www.astronomer.io/docs/learn/custom-airflow-ui-docs-tutorial
+    start_date=datetime(2025, 4, 1),  # When can this DAG be scheduled?
+    schedule="@daily",  # How often? '@daily' means once per day.
+    max_consecutive_failed_dag_runs=5,  # Auto-pause if this DAG fails 5 times in a row
+    doc_md="""
+    # Astronaut ETL Example DAG
+    This beginner-friendly DAG demonstrates:
+    - Use of the TaskFlow API (`@dag`, `@task` decorators)
+    - Calling an external API to fetch data
+    - Data quality validation in a separate task
+    - Dynamic task mapping to process results in parallel
+    - Asset-aware outputs for cross-DAG scheduling
+    Explore the code comments to learn how each Airflow feature works!
+    [Learn more about writing clean Airflow DAGs](https://docs.astronomer.io/learn/airflow-best-practices)
+    """,
     default_args={
-        "owner": "Astro",  # owner of this DAG in the Airflow UI
-        "retries": 3,  # tasks retry 3 times before they fail
-        "retry_delay": duration(seconds=5),  # tasks wait 30s in between retries
-    },  # default_args are applied to all tasks in a DAG
-    tags=["example", "space"],  # add tags in the UI
-    is_paused_upon_creation=False,  # start running the DAG as soon as its created
+        "owner": "Astro",  # For Airflow UI owners field
+        "retries": 3,  # Retry each task up to 3 times on failure
+        "retry_delay": duration(seconds=5),  # Wait 5 seconds between retries
+    },
+    tags=["example", "space"],
+    is_paused_upon_creation=False,  # Start immediately after being parsed
 )
 def example_astronauts():
-    # ---------------- #
-    # Task Definitions #
-    # ---------------- #
-    # the @task decorator turns any Python function into an Airflow task
-    # any @task decorated function that is called inside the @dag decorated
-    # function is automatically added to the DAG.
-    # if one exists for your use case you can still use traditional Airflow operators
-    # and mix them with @task decorators. Checkout registry.astronomer.io for available operators
-    # see: https://www.astronomer.io/docs/learn/airflow-decorators for information about @task
-    # see: https://www.astronomer.io/docs/learn/what-is-an-operator for information about traditional operators
+    """
+    This DAG fetches a list of astronauts currently in space and prints a message for each.
+    Steps:
+      1. Get the astronaut data from an open API
+      2. Validate the data structure (data quality step)
+      3. Print each astronaut and their respective craft using dynamic task mapping
+    """
 
     @task(
-        outlets=[Asset("current_astronauts")]
-    )  # Define that this task produces updates to an Airflow Dataset.
-    # Downstream DAGs can be scheduled based on combinations of Dataset updates
-    # coming from tasks in the same Airflow instance or calls to the Airflow API.
-    # See: https://www.astronomer.io/docs/learn/airflow-datasets]
+        outlets=[
+            Asset("current_astronauts")
+        ],  # Declares this task outputs a Dataset/Asset
+    )
     def get_astronauts(**context) -> list[dict]:
         """
-        This task uses the requests library to retrieve a list of Astronauts
-        currently in space. The results are pushed to XCom with a specific key
-        so they can be used in a downstream pipeline. The task returns a list
-        of Astronauts to be used in the next task.
+        Fetches the current list of astronauts in space from the Open Notify API.
+        Returns a list of dictionaries (one per astronaut) or fallback demo data on error.
+        - Demonstrates making HTTP requests in a task
+        - Shows use of XCom for passing extra metadata downstream
+        - Outputs an Airflow Asset to enable asset-driven scheduling
         """
         try:
-            r = requests.get("http://api.open-notify.org/astros.json")
-            r.raise_for_status()
-            number_of_people_in_space = r.json()["number"]
-            list_of_people_in_space = r.json()["people"]
-        except:
-            print("API currently not available, using hardcoded data instead.")
-            number_of_people_in_space = 12
-            list_of_people_in_space = [
-                {"craft": "ISS", "name": "Marco Alain Sieber"},
-                {"craft": "ISS", "name": "Claude Nicollier"},
+            response = requests.get("http://api.open-notify.org/astros.json")
+            response.raise_for_status()
+            data = response.json()
+            astronauts = data["people"]
+            n = data["number"]
+        except Exception as e:
+            print(f"API not available: {e} -- using demo astronauts.")
+            astronauts = [
+                {"craft": "ISS", "name": "Demo Astronaut A"},
+                {"craft": "ISS", "name": "Demo Astronaut B"},
             ]
-
-        context["ti"].xcom_push(
-            key="number_of_people_in_space", value=number_of_people_in_space
-        )
-        return list_of_people_in_space
+            n = len(astronauts)
+        # Store count in XCom for possible later use
+        context["ti"].xcom_push(key="number_of_people_in_space", value=n)
+        return astronauts
 
     @task
     def validate_astronauts(astronauts: list[dict]) -> list[dict]:
         """
-        Data quality validation task for the astronaut list.
-        Raises an exception and stops the pipeline if:
-        - The data is not a list or is empty
-        - Any record is missing required keys ('name', 'craft')
+        Data Quality Check: Ensures astronaut data is a non-empty list of dicts with
+        'name' and 'craft' keys. If validation fails, the DAG run fails immediately.
         """
         if not isinstance(astronauts, list):
-            raise ValueError("Astronauts data is not a list.")
+            raise ValueError("Returned data is not a list.")
         if not astronauts:
-            raise ValueError("Astronauts list is empty.")
-        for idx, item in enumerate(astronauts):
-            if not isinstance(item, dict):
-                raise ValueError(f"Astronaut entry {idx} is not a dict.")
-            for key in ["name", "craft"]:
-                if key not in item:
-                    raise ValueError(f"Astronaut entry {idx} missing key: {key}")
-        # Optionally, add more fine-grained checks here, e.g., value types, non-empty "name"
+            raise ValueError("Received empty astronaut data.")
+        for i, record in enumerate(astronauts):
+            if not isinstance(record, dict):
+                raise ValueError(f"Astronaut #{i} is not a dict: {record}")
+            for field in ("name", "craft"):
+                if field not in record:
+                    raise ValueError(f"Astronaut #{i} missing '{field}' field.")
+        # (Educational note: You could do more checks here.)
         return astronauts
 
     @task
     def print_astronaut_craft(greeting: str, person_in_space: dict) -> None:
         """
-        This task creates a print statement with the name of an
-        Astronaut in space and the craft they are flying on from
-        the API request results of the previous task, along with a
-        greeting which is hard-coded in this example.
+        Print the name and craft for a person in space.
+        This is dynamically mapped over all astronauts, so runs once per person.
+        Args:
+          greeting: Static greeting
+          person_in_space: Dict with keys 'name', 'craft'
         """
-        craft = person_in_space["craft"]
         name = person_in_space["name"]
+        craft = person_in_space["craft"]
+        print(f"{name} is in space aboard the {craft}! {greeting}")
 
-        print(f"{name} is in space flying on the {craft}! {greeting}")
-
-    # ------------------------------------ #
-    # Calling tasks + Setting dependencies #
-    # ------------------------------------ #
-
-    # Insert data validation step between get_astronauts and print task
-    validated_astronauts = validate_astronauts(get_astronauts())
-
-    # Now run dynamic mapping on validated data only
-    print_astronaut_craft.partial(greeting="Hello! :)").expand(
-        person_in_space=validated_astronauts
+    # ----- Pipeline Structure ----- #
+    # Step 1: Download astronauts
+    raw_astronauts = get_astronauts()
+    # Step 2: Validate
+    valid_astronauts = validate_astronauts(raw_astronauts)
+    # Step 3: Use dynamic task mapping to print info for each astronaut concurrently
+    print_astronaut_craft.partial(greeting="Hello from Earth!").expand(
+        person_in_space=valid_astronauts
     )
+    # (Educational note: .partial() sets static params, .expand() runs task for each item in list)
 
 
-# Instantiate the DAG
+# Instantiate your DAG (for Airflow to discover it)
 example_astronauts()
